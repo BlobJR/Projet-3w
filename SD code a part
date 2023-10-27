@@ -1,0 +1,320 @@
+#include <ChainableLED.h>
+#include <Wire.h>
+#include <RTClib.h>
+#include <SoftwareSerial.h>
+#include <TinyGPS.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
+#include <EEPROM.h>
+#include <SD.h>
+
+#define NUM_LEDS 5
+#define BUTTON1_PIN 2    // Define the pin for the first button
+#define BUTTON2_PIN 3    // Define the pin for the second button
+#define LED_OFF 0, 0, 0  // Turn off LED
+#define LED_RED 255, 0, 0
+#define LED_GREEN 0, 255, 0
+#define LED_ORANGE 255, 65, 0
+#define LED_BLUE 0, 0, 255
+#define LED_YELLOW 255, 255, 0
+RTC_DS1307 rtc;
+SoftwareSerial gpsSerial(5, 6);
+TinyGPS gps;
+Adafruit_BME280 bme;
+String latitudeStr;
+String longitudeStr;
+File dataFile;
+int fileRevision = 0;
+volatile int etatprecedent = 1;
+ChainableLED leds(7, 8, NUM_LEDS);
+int mode = 0;  // 0: start, 1: standard, 2: maintenance, 3: configuration, 4: économie
+volatile bool bouton1Appuye = false;
+unsigned long debutAppui1 = 0;
+volatile bool bouton2Appuye = false;
+unsigned long debutAppui2 = 0;
+const int chipSelect = 4;
+void setup() {
+  Serial.begin(9600);
+  if (!SD.begin(chipSelect)) { // Utilisez le numéro de broche approprié pour le module SD
+    Serial.print(F("Erreur lors de l'initialisation de la carte SD."));
+    while (1);
+    if(!SD.exists("data.LOG")){
+      Serial.print(F("problème lors de la supression du fichier 'data.txt'"));    
+    }
+  }
+  leds.init();
+  pinMode(BUTTON1_PIN, INPUT_PULLUP);
+  pinMode(BUTTON2_PIN, INPUT_PULLUP);
+  digitalWrite(BUTTON1_PIN, 1);
+  digitalWrite(BUTTON2_PIN, 1);
+  Wire.begin();
+  rtc.begin();
+  rtc.adjust(DateTime(__DATE__, __TIME__));
+
+  if (!rtc.isrunning()) {
+    Serial.println("RTC is NOT running!");
+  }
+  if (!bme.begin(0x76)) {
+    Serial.println(F("Could not find a valid BME280 sensor, check wiring!"));
+    while (1)
+      ;
+  }
+  gpsSerial.begin(9600);
+  Serial.print(digitalRead(BUTTON1_PIN));
+  // attachInterrupt(digitalPinToInterrupt(BUTTON1_PIN), button1Pressed, CHANGE);
+  // attachInterrupt(digitalPinToInterrupt(BUTTON2_PIN), button2Pressed, CHANGE);
+  // attachInterrupt(digitalPinToInterrupt(BUTTON1_PIN), button1Released, HIGH);
+  // attachInterrupt(digitalPinToInterrupt(BUTTON2_PIN), button2Released, HIGH);
+  demarrage();
+}
+
+
+struct SensorData {
+  float temperature;
+  float pressure;
+  float humidity;
+  int light;
+  String latitude;
+  String longitude;
+};
+
+SensorData data;
+void loop() {
+  switch (mode) {
+    case 0:
+      start_button();
+      break;
+    case 1:
+      attachInterrupt(digitalPinToInterrupt(BUTTON1_PIN), button1Pressed, CHANGE);
+      attachInterrupt(digitalPinToInterrupt(BUTTON2_PIN), button2Pressed, CHANGE);
+      standard();
+      break;
+    case 2:
+      maintenance();
+      break;
+    // case 3:
+    //   configuration();
+    //   break;
+    // case 4:
+    //   economie();
+    //   break;
+    default:
+      break;
+  }
+  if (bouton1Appuye && digitalRead(BUTTON1_PIN) == 0 && (millis() - debutAppui1 >= 5000)) {
+
+    Serial.println(F("Entrée en mode maintenance"));
+    maintenance();
+  }
+  // if (bouton2Appuye && digitalRead(BUTTON2_PIN) == 0 && (millis() - debutAppui2 >= 5000)) {
+
+  //   Serial.println(F("Entrée en mode économie"));
+  //   economie();
+  // }
+}
+void demarrage() {
+  mode = 0;
+  leds.setColorRGB(0, LED_RED);
+}
+void createNewLogFile() {
+  // Fermez le fichier actuel si ouvert
+  if (dataFile) {
+    dataFile.close();
+  }
+
+  fileRevision++;
+
+
+  char fileName[13]; 
+  sprintf(fileName, "%02d%02d%02d_%d.LOG", rtc.now().year() % 100, rtc.now().month(), rtc.now().day(), fileRevision);
+
+  
+  dataFile = SD.open(fileName, FILE_WRITE);
+  if (dataFile) {
+    Serial.print(F("Nouveau fichier créé : "));
+  } 
+}
+
+void standard() {
+  
+  // attachInterrupt(digitalPinToInterrupt(BUTTON1_PIN), button1Pressed, CHANGE);
+  // attachInterrupt(digitalPinToInterrupt(BUTTON2_PIN), button2Pressed, CHANGE);
+  mode = 1;
+  leds.setColorRGB(0, LED_GREEN);
+
+  delay(2000);
+  
+  exec();
+ 
+
+  
+}
+
+
+void maintenance() {
+  mode = 2;
+  leds.setColorRGB(0, LED_ORANGE);
+  attachInterrupt(digitalPinToInterrupt(BUTTON2_PIN), standard, CHANGE);
+  // // Code pour le mode maintenance
+
+  // DateTime now = rtc.now();
+  // Serial.print("RTC Time: ");
+  // Serial.print(now.unixtime());
+  // exec();
+  // Serial.print(F("Température:"));
+  // Serial.println(data.temperature);
+  // Serial.print(F("Pression:"));
+  // Serial.println(data.pressure);
+  // Serial.print(F("Humidité:"));
+  // Serial.println(data.humidity);
+  //Serial.print("Luminosité:");
+  //Serial.println(data.light);
+  // Serial.println("Pression:" + String(data.pressure));
+  // Serial.println("Humidité:" + String(data.humidity));
+  // Serial.println("Luminosité:" + String(data.light));
+  delay(2000);
+}
+
+// void configuration() {
+//   mode = 3;
+//   leds.setColorRGB(0, LED_YELLOW);
+//   // Code pour le mode configuration
+// }
+
+// void economie() {
+//   Serial.println(F("eco here"));
+//   mode = 4;
+//   leds.setColorRGB(0, LED_BLUE);
+//   attachInterrupt(digitalPinToInterrupt(BUTTON1_PIN), standard, CHANGE);
+//   // Code pour le mode économie
+// }
+
+void start_button() {
+  Serial.println(F("starting...."));
+  unsigned long startTime = millis();
+  unsigned long duration = 2000;  // 10 secondes
+
+  while (millis() - startTime < duration) {
+    // if (digitalRead(BUTTON1_PIN) == LOW) {
+    //   Serial.println(F("Bouton 1 pressé"));
+    //   configuration();  // Entrez en mode configuration
+    //   return;
+    // }
+    // if (digitalRead(BUTTON2_PIN) == LOW) {
+    //   Serial.println(F("Bouton 2 pressé"));
+    //   economie();  // Entrez en mode économie
+    //   return;
+    // }
+  }
+
+  // Si 10 secondes se sont écoulées sans action, passez en mode standard
+  Serial.println(F("Entrée en mode standard"));
+  standard();
+}
+
+void button1Pressed() {
+  int etatactuel = digitalRead(BUTTON1_PIN);
+  if (etatactuel == 1 && etatprecedent == 0) {
+    debutAppui1 = 0;
+    bouton1Appuye = false;
+    Serial.println(F("Bouton 1 est relaché "));
+  } else if (etatactuel == 0 && etatprecedent == 1) {
+    debutAppui1 = millis();
+    bouton1Appuye = true;
+    Serial.println(F("Bouton 1 est maintenu pressé "));
+  }
+}
+
+// Code pour le bouton 1 en mode standard
+
+
+
+void button2Pressed() {
+  int etatactuel = digitalRead(BUTTON2_PIN);
+  if (etatactuel == 1 && etatprecedent == 0) {
+    debutAppui2 = 0;
+    bouton2Appuye = false;
+    Serial.println(F("Bouton 2 est relaché "));
+  } else if (etatactuel == 0 && etatprecedent == 1) {
+    debutAppui2 = millis();
+    bouton2Appuye = true;
+    Serial.println(F("Bouton 2 est maintenu pressé "));
+  }
+}
+void exec() {
+  Serial.print(F("Entrez dans la fonction exec"));
+  if (dataFile.size()>2000){
+    createNewLogFile();
+  }    
+else{
+   dataFile = SD.open("data.LOG", FILE_WRITE);  
+    }  
+  readTemperaturePressureHumidity();
+  readLightSensor();
+  readGPS();
+ // Ouvrir le fichier pour écriture
+  
+  if (dataFile) {
+    Serial.print(F("Entrez dans la fonction datafile"));
+    dataFile.print("Température:");
+    dataFile.print(String(data.temperature));
+    dataFile.write(" Pression:");
+    dataFile.println(String(data.pressure));
+    dataFile.write(" Humidité:");
+    dataFile.println(String(data.humidity));
+    dataFile.println(); // Nouvelle ligne pour séparer les enregistrements
+
+    Serial.println(F("Données enregistrées avec succès."));
+    dataFile.close(); // Fermez le fichier après l'écriture.
+  }
+
+  
+} 
+
+void readTemperaturePressureHumidity() {
+data.temperature = bme.readTemperature();
+data.pressure = bme.readPressure() / 100.0F; // Conversion en hPa (hectopascals)
+data.humidity = bme.readHumidity();
+}
+
+void readLightSensor() {
+  data.light = analogRead(A0);
+}
+
+void readGPS() {
+
+  while (gpsSerial.available()) {
+    if (gps.encode(gpsSerial.read())) {  // encode gps data
+      long latRaw, lonRaw;
+      gps.get_position(&latRaw, &lonRaw);  // get latitude and longitude
+
+      // Convert latitude and longitude to strings
+      int latInt = (int)(latRaw / 1000000);
+      int lonInt = (int)(lonRaw / 1000000);
+
+      // Calculate the decimal part of latitude and longitude
+      int latDecimal = abs((int)latRaw) % 1000000;
+      int lonDecimal = abs((int)lonRaw) % 1000000;
+
+      // Format the strings
+      latitudeStr = String((latRaw < 0 ? 'S' : 'N')) + String(latInt) + "." + String(latDecimal);
+      longitudeStr = String((lonRaw < 0 ? 'W' : 'E')) + String(lonInt) + "." + String(lonDecimal);
+      /*
+      Serial.println("Global Pourriture System");
+      Serial.println(latitudeStr);
+      Serial.println(longitudeStr);
+*/
+    }
+  }
+}
+
+// void button1Released(){
+//   Serial.print("released1 ok");
+//   debutAppui1=0;
+//   bouton1Appuye=false;
+// }
+// void button2Released(){
+//   Serial.print("released2 ok");
+//   debutAppui2=0;
+//   bouton2Appuye=false;
+// }
