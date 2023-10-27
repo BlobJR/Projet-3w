@@ -1,0 +1,537 @@
+#include <ChainableLED.h>     // Bibliothèque pour les LEDs
+#include <Wire.h>             // Bibliothèque pour la communication I2C
+#include <RTClib.h>           // Bibliothèque pour le module RTC (Horloge en temps réel)
+#include <SoftwareSerial.h>   // Bibliothèque pour la communication série logicielle
+#include <TinyGPS.h>          // Bibliothèque pour le module GPS
+#include <Adafruit_Sensor.h>  // Bibliothèque pour les capteurs Adafruit
+#include <Adafruit_BME280.h>  // Bibliothèque pour le capteur de température et d'humidité BME280
+#include <EEPROM.h>           // Bibliothèque pour la mémoire EEPROM
+#include <SD.h>               // Bibliothèque pour la carte SD
+
+// Définition du nombre de LEDs, des broches des boutons, et des couleurs
+#define NUM_LEDS 5
+#define BUTTON1_PIN 2    // Broche pour le premier bouton
+#define BUTTON2_PIN 3    // Broche pour le deuxième bouton
+#define LED_OFF 0, 0, 0  // Couleur éteinte
+#define LED_RED 255, 0, 0
+#define LED_GREEN 0, 255, 0
+#define LED_ORANGE 255, 65, 0
+#define LED_BLUE 0, 0, 255
+#define LED_YELLOW 255, 255, 0
+#define LED_WHITE 255, 255, 255
+
+RTC_DS1307 rtc;
+SoftwareSerial gpsSerial(5, 6);  // Configuration des broches de communication série logicielle
+TinyGPS gps;
+Adafruit_BME280 bme;
+String latitudeStr;
+String longitudeStr;
+volatile int etatprecedent = 1;  // Variable pour la gestion des boutons
+ChainableLED leds(7, 8, NUM_LEDS);
+int mode = 0;  // Modes : 0: start, 1: standard, 2: maintenance, 3: configuration, 4: économie
+volatile bool bouton1Appuye = false;
+unsigned long debutAppui1 = 0;
+volatile bool bouton2Appuye = false;
+unsigned long debutAppui2 = 0;
+
+// Configuration des paramètres de capteurs
+byte LUMIN = 1;
+int LUMIN_LOW = 200;
+int LUMIN_HIGH = 700;
+int TIMEOUT = 30;
+int LOG_INTERVALL = 2000;  // Intervalle de temps en millisecondes
+int FILE_MAX_SIZE = 4096;
+byte TEMP_AIR = 1;
+byte MIN_TEMP_AIR = -5;
+byte MAX_TEMP_AIR = 30;
+byte HYGR = 1;
+int HYGR_MINT = 0;
+int HYGR_MAXT = 50;
+int PRESSURE = 1;
+int PRESSURE_MIN = 450;
+int PRESSURE_MAX = 1030;
+
+void setup() {
+  Serial.begin(9600);                        // Démarre la communication série avec une vitesse de 9600 bauds
+  leds.init();                               // Initialise les LEDs
+  pinMode(BUTTON1_PIN, INPUT_PULLUP);        // Configure la broche du premier bouton en entrée avec résistance de tirage activée
+  pinMode(BUTTON2_PIN, INPUT_PULLUP);        // Configure la broche du deuxième bouton de la même manière
+  digitalWrite(BUTTON1_PIN, 1);              // Désactive la résistance de tirage interne
+  digitalWrite(BUTTON2_PIN, 1);              // Désactive la résistance de tirage interne
+  Wire.begin();                              // Initialise la communication I2C
+  rtc.begin();                               // Initialise le module RTC
+  rtc.adjust(DateTime(__DATE__, __TIME__));  // Ajuste l'heure du RTC à la compilation
+
+  if (!rtc.isrunning()) {
+    Serial.println(F("RTC is NOT running!"));
+  }
+  if (!bme.begin(0x76)) {
+    Serial.println(F("Could not find a valid BME280 sensor, check wiring!"));
+    while (1) {
+      displayError(3);  // Affiche une erreur sur la LED
+    }
+  }
+  gpsSerial.begin(9600);  // Démarre la communication série logicielle pour le GPS
+  demarrage();
+}
+
+// Structure de données pour stocker les valeurs des capteurs
+struct SensorData {
+  float temperature;
+  float pressure;
+  float humidity;
+  int light;
+  String latitude;
+  String longitude;
+};
+
+SensorData data;
+void loop() {
+  switch (mode) {
+    case 0:
+      start_button();  // Gère le démarrage (mode 0)
+      break;
+    case 1:
+      // Active les interruptions sur les boutons
+      attachInterrupt(digitalPinToInterrupt(BUTTON1_PIN), button1Pressed, CHANGE);
+      attachInterrupt(digitalPinToInterrupt(BUTTON2_PIN), button2Pressed, CHANGE);
+      standard();  // Exécute le mode standard (mode 1)
+      break;
+    case 2:
+      maintenance();  // Exécute le mode maintenance (mode 2)
+      break;
+    case 3:
+      configuration();  // Exécute le mode configuration (mode 3)
+      break;
+    case 4:
+      economie();  // Exécute le mode économie (mode 4)
+      break;
+    default:
+      break;
+  }
+
+  // Gestion des boutons pour changer de mode
+  if (bouton1Appuye && digitalRead(BUTTON1_PIN) == 0 && (millis() - debutAppui1 >= 5000)) {
+    // Passage en mode maintenance après un appui long sur le bouton 1
+    Serial.println(F("Entrée en mode maintenance"));
+    maintenance();
+  }
+  if (bouton2Appuye && digitalRead(BUTTON2_PIN) == 0 && (millis() - debutAppui2 >= 5000)) {
+    // Passage en mode économie après un appui long sur le bouton 2
+    Serial.println(F("Entrée en mode économie"));
+    economie();
+  }
+}
+
+void demarrage() {
+  // Initialise le mode 0 (démarrage) et allume la LED en rouge
+  mode = 0;
+  leds.setColorRGB(0, LED_RED);
+}
+void standard() {
+  // La fonction standard n'est pas implémentée ici, elle devrait gérer le mode standard.
+  // attachInterrupt(digitalPinToInterrupt(BUTTON1_PIN), button1Pressed, CHANGE);
+  // attachInterrupt(digitalPinToInterrupt(BUTTON2_PIN), button2Pressed, CHANGE);
+  mode = 1;                        // Passage en mode standard (mode 1)
+  leds.setColorRGB(0, LED_GREEN);  // Allume la LED en vert pour indiquer le mode standard
+                                   // exec(); // Appel à une fonction "exec()" qui est actuellement en commentaire lié a l'enregistrement des données sur la carte SD
+
+  //   delay(2000);
+}
+
+void maintenance() {
+  mode = 2;                                                               // Passage en mode maintenance (mode 2)
+  leds.setColorRGB(0, LED_ORANGE);                                        // Allume la LED en orange pour indiquer le mode maintenance
+  attachInterrupt(digitalPinToInterrupt(BUTTON2_PIN), standard, CHANGE);  // Active l'interruption pour revenir au mode standard en cas d'action sur le bouton 2
+  // // Code pour le mode maintenance
+
+  // DateTime now = rtc.now();
+  // Serial.print("RTC Time: ");
+  // Serial.print(now.unixtime());
+  readGPS();                          // Appelle une fonction pour lire les données du GPS
+  readTemperaturePressureHumidity();  // Appelle une fonction pour lire les données de température, pression et humidité
+  readLightSensor();                  // Appelle une fonction pour lire les données du capteur de luminosité
+  Serial.print(F("Température:"));
+  Serial.println(data.temperature);  // Affiche la température lue
+  Serial.print(F("Pression:"));
+  Serial.println(data.pressure);  // Affiche la pression lue
+  Serial.print(F("Humidité:"));
+  Serial.println(data.humidity);  // Affiche l'humidité lue
+  Serial.print(F("Luminosité:"));
+  Serial.println(data.light);  // Affiche la luminosité lue
+
+  delay(2000);  // Attente de 2 secondes
+}
+void configuration() {
+  mode = 3;                         // Passage en mode configuration (mode 3)
+  leds.setColorRGB(0, LED_YELLOW);  // Allume la LED en jaune pour indiquer le mode configuration
+
+  // Vérifie s'il y a des données disponibles sur la communication série (port série)
+  if (Serial.available() > 0) {
+    String command = Serial.readStringUntil('\n');  // Lit la commande entrée par l'utilisateur jusqu'à la fin de la ligne
+
+    // Analyse de la commande entrée par l'utilisateur
+    if (command.startsWith("LOG_INTERVALL=")) {
+      LOG_INTERVALL = command.substring(14).toInt();  // Met à jour l'intervalle de journalisation
+      Serial.print(F("LOG_INTERVALL mis à jour: "));
+      Serial.println(LOG_INTERVALL);
+    } else if (command.startsWith("FILE_MAX_SIZE=")) {
+      FILE_MAX_SIZE = command.substring(13).toInt();  // Met à jour la taille maximale du fichier
+      Serial.print(F("FILE_MAX_SIZE mis à jour: "));
+      Serial.println(FILE_MAX_SIZE);
+    } else if (command.startsWith("LUMIN=")) {
+      LUMIN = command.substring(6).toInt();  // Met à jour la configuration de la luminosité
+      Serial.print(F("LUMIN mis à jour: "));
+      Serial.println(LUMIN);
+    } else if (command.startsWith("LUMIN_LOW=")) {
+      LUMIN_LOW = command.substring(10).toInt();  // Met à jour le seuil de luminosité bas
+      Serial.print(F("LUMIN_LOW mis à jour: "));
+      Serial.println(LUMIN_LOW);
+    } else if (command.startsWith("LUMIN_HIGH=")) {
+      LUMIN_HIGH = command.substring(11).toInt();  // Met à jour le seuil de luminosité élevé
+      Serial.print(F("LUMIN_HIGH mis à jour: "));
+      Serial.println(LUMIN_HIGH);
+    } else if (command.equals("RESET")) {
+      // Réinitialise les paramètres à leurs valeurs par défaut
+      LOG_INTERVALL = 2000;
+      FILE_MAX_SIZE = 4096;
+      LUMIN = 1;
+      LUMIN_LOW = 200;
+      LUMIN_HIGH = 700;
+      TEMP_AIR = 0;
+      MIN_TEMP_AIR = -5;
+      MAX_TEMP_AIR = 30;
+      HYGR = 1;
+      HYGR_MINT = 0;
+      HYGR_MAXT = 50;
+      PRESSURE = 0;
+      PRESSURE_MIN = 450;
+      PRESSURE_MAX = 1030;
+      Serial.println(F("Paramètres réinitialisés aux valeurs par défaut."));
+    } else if (command.equals("VERSION")) {
+      Serial.println(F("Version du programme: 1.0"));
+    } else if (command.startsWith("TEMP_AIR=")) {
+      TEMP_AIR = command.substring(9).toInt();  // Met à jour la configuration de la température de l'air
+      Serial.print(F("TEMP_AIR mis à jour: "));
+      Serial.println(TEMP_AIR);
+    } else if (command.startsWith("MIN_TEMP_AIR=")) {
+      MIN_TEMP_AIR = command.substring(13).toInt();  // Met à jour la température minimale de l'air
+      Serial.print(F("MIN_TEMP_AIR mis à jour: "));
+      Serial.println(MIN_TEMP_AIR);
+    } else if (command.startsWith("MAX_TEMP_AIR=")) {
+      MAX_TEMP_AIR = command.substring(13).toInt();  // Met à jour la température maximale de l'air
+      Serial.print(F("MAX_TEMP_AIR mis à jour: "));
+      Serial.println(MAX_TEMP_AIR);
+    } else if (command.startsWith("HYGR=")) {
+      HYGR = command.substring(5).toInt();  // Met à jour la configuration d'humidité
+      Serial.print(F("HYGR mis à jour: "));
+      Serial.println(HYGR);
+    } else if (command.startsWith("HYGR_MINT=")) {
+      HYGR_MINT = command.substring(10).toInt();  // Met à jour la valeur minimale d'humidité
+      Serial.print(F("HYGR_MINT mis à jour: "));
+      Serial.println(HYGR_MINT);
+    } else if (command.startsWith("HYGR_MAXT=")) {
+      HYGR_MAXT = command.substring(10).toInt();  // Met à jour la valeur maximale d'humidité
+      Serial.print(F("HYGR_MAXT mis à jour: "));
+      Serial.println(HYGR_MAXT);
+    } else if (command.startsWith("PRESSURE=")) {
+      PRESSURE = command.substring(10).toInt();  // Met à jour la configuration de la pression
+      Serial.print(F("PRESSURE mis à jour: "));
+      Serial.println(PRESSURE);
+    } else if (command.startsWith("PRESSURE_MIN=")) {
+      PRESSURE_MIN = command.substring(14).toInt();  // Met à jour la valeur minimale de pression
+      Serial.print(F("PRESSURE_MIN mis à jour: "));
+      Serial.println(PRESSURE_MIN);
+    } else if (command.startsWith("PRESSURE_MAX=")) {
+      PRESSURE_MAX = command.substring(14).toInt();  // Met à jour la valeur maximale de pression
+      Serial.print(F("PRESSURE_MAX mis à jour: "));
+      Serial.println(PRESSURE_MAX);
+    } else {
+      Serial.println(F("Commande non reconnue."));
+    }
+  }
+  // Code pour le mode configuration
+}
+void economie() {
+  mode = 4;                                                               // Passage en mode économie (mode 4)
+  leds.setColorRGB(0, LED_BLUE);                                          // Allume la LED en bleu pour indiquer le mode économie
+  attachInterrupt(digitalPinToInterrupt(BUTTON1_PIN), standard, CHANGE);  // Active l'interruption pour revenir au mode standard en cas d'action sur le bouton 1
+
+  // Les lignes suivantes sont commentées car elles ne sont pas utilisées ici
+  // byte count = 1;
+  // if (count % 2 == 0) {
+  //     exec();
+  // } else {
+  //     readTemperaturePressureHumidity();
+  //     readLightSensor();
+  //     count++;
+  // }
+  // delay(LOG_INTERVALL * 2);
+}
+
+void start_button() {
+  Serial.println(F("starting...."));   // Affiche un message de démarrage
+  unsigned long startTime = millis();  // Enregistre le temps de début
+  unsigned long duration = 2000;       // Durée pendant laquelle le bouton doit être pressé pour déclencher la configuration
+
+  while (millis() - startTime < duration) {
+    if (digitalRead(BUTTON1_PIN) == LOW) {   // Vérifie si le bouton 1 est pressé
+      Serial.println(F("Bouton 1 pressé"));  // Affiche un message si le bouton 1 est pressé
+      configuration();                       // Si le bouton 1 est pressé pendant le démarrage, passe en mode configuration
+      return;                                // Sort de la fonction après avoir effectué la configuration
+    }
+  }
+
+  // Si 10 secondes se sont écoulées sans action, passez en mode standard
+  Serial.println(F("Entrée en mode standard"));  // Affiche un message indiquant le passage en mode standard
+  standard();                                    // Appelle la fonction standard pour passer en mode standard
+}
+void button1Pressed() {
+  int etatActuel = digitalRead(BUTTON1_PIN);  // Lire l'état actuel du bouton 1
+  if (etatActuel == 1 && etatprecedent == 0) {
+    debutAppui1 = 0;                         // Réinitialise le temps de début d'appui du bouton 1
+    bouton1Appuye = false;                   // Marque le bouton 1 comme non appuyé
+    Serial.println("Bouton 1 est relâché");  // Affiche un message lorsque le bouton 1 est relâché
+  } else if (etatActuel == 0 && etatprecedent == 1) {
+    debutAppui1 = millis();                          // Enregistre le temps auquel le bouton 1 est maintenu pressé
+    bouton1Appuye = true;                            // Marque le bouton 1 comme appuyé
+    Serial.println("Bouton 1 est maintenu pressé");  // Affiche un message lorsque le bouton 1 est maintenu pressé
+  }
+}
+void button2Pressed() {
+  int etatActuel = digitalRead(BUTTON2_PIN);  // Lire l'état actuel du bouton 2
+  if (etatActuel == 1 && etatprecedent == 0) {
+    debutAppui2 = 0;                         // Réinitialise le temps de début d'appui du bouton 2
+    bouton2Appuye = false;                   // Marque le bouton 2 comme non appuyé
+    Serial.println("Bouton 2 est relâché");  // Affiche un message lorsque le bouton 2 est relâché
+  } else if (etatActuel == 0 && etatprecedent == 1) {
+    debutAppui2 = millis();                          // Enregistre le temps auquel le bouton 2 est maintenu pressé
+    bouton2Appuye = true;                            // Marque le bouton 2 comme appuyé
+    Serial.println("Bouton 2 est maintenu pressé");  // Affiche un message lorsque le bouton 2 est maintenu pressé
+  }
+}
+// void exec() {
+//   Serial.print(F("Entrez dans la fonction exec"));
+//   char fileName[13];
+//   sprintf(fileName, "%02d%02d%02d_%d.LOG", rtc.now().year() % 100, rtc.now().month(), rtc.now().day(), fileRevision);
+//   if (dataFile.size()>2000){
+//     dataFile.close();
+//     fileRevision++;
+//   dataFile = SD.open(fileName, FILE_WRITE);
+//   if (dataFile) {
+//     Serial.print(F("Nouveau fichier créé : "));
+//                 }
+//                           }
+//   else{
+//    dataFile = SD.open(fileName, FILE_WRITE);
+//       }
+//   readGPS();
+//   readTemperaturePressureHumidity();
+
+//   if (LUMIN == 1) {
+//     readLightSensor();
+//   } else {
+//     Serial.println(F("Capteur de luminosité désactivé"));
+//   }
+//   if (dataFile) {
+//     Serial.print(F("Entrez dans la fonction datafile"));
+//     dataFile.print("Température:");
+//     dataFile.print(String(data.temperature));
+//     dataFile.write(" Pression:");
+//     dataFile.println(String(data.pressure));
+//     dataFile.write(" Humidité:");
+//     dataFile.println(String(data.humidity));
+//     dataFile.println(); // Nouvelle ligne pour séparer les enregistrements
+
+//     Serial.println(F("Données enregistrées avec succès."));
+//     dataFile.close(); // Fermez le fichier après l'écriture.
+//                 }
+// }
+void readTemperaturePressureHumidity() {
+  // Vérifie si le capteur de température est activé (TEMP_AIR = 1)
+  if (TEMP_AIR == 1) {
+    // Lecture de la température à partir du capteur BME280
+    data.temperature = bme.readTemperature();
+    // Vérification des limites de température (-10°C à 60°C)
+    if (data.temperature <= -10 || data.temperature >= 60) {
+      while (1) {
+        displayError(3);  // Affiche une erreur de type 3 (capteur de données incorrect)
+      }
+    }
+  } else {
+    Serial.println(F("capteur de température désactivé"));
+  }
+
+  // Vérifie si le capteur de pression est activé (PRESSURE = 1)
+  if (PRESSURE == 1) {
+    // Lecture de la pression à partir du capteur BME280 et conversion en hPa
+    data.pressure = bme.readPressure() / 100.0F;
+    // Vérification des limites de pression (850 hPa à 1080 hPa)
+    if (data.pressure <= 850 || data.pressure >= 1080) {
+      while (1) {
+        displayError(3);  // Affiche une erreur de type 3 (capteur de données incorrect)
+      }
+    }
+  } else {
+    Serial.println(F("capteur de pression désactivé"));
+  }
+
+  // Vérifie si le capteur d'humidité est activé (HYGR = 1)
+  if (HYGR == 1) {
+    // Lecture de l'humidité à partir du capteur BME280
+    data.humidity = bme.readHumidity();
+  } else {
+    Serial.println(F("capteur d'hygrométrie désactivé"));
+  }
+}
+void readLightSensor() {
+  // Vérifie si le capteur de luminosité est activé (LUMIN = 1)
+  if (LUMIN == 1) {
+    // Lecture de la valeur de luminosité à partir de la broche A0 (analogRead)
+    data.light = analogRead(A0);
+  } else {
+    Serial.print(F("capteur de luminosité désactivé"));
+  }
+
+  // Vérification des limites de la valeur de luminosité (0 à 1023)
+  if (data.light <= 0 || data.light >= 1023) {
+    while (1) {
+      displayError(3);  // Affiche une erreur de type 3 (capteur de données incorrect)
+    }
+  }
+
+  // Comparaison de la valeur de luminosité avec les seuils LUMIN_LOW et LUMIN_HIGH
+  if (data.light < LUMIN_LOW) {
+    Serial.println(F("Luminosité faible"));
+  } else if (data.light > LUMIN_HIGH) {
+    Serial.println(F("Luminosité forte"));
+  } else {
+    Serial.println(F("Luminosité moyenne"));
+  }
+}
+void readGPS() {
+  // Vérifie si des données sont disponibles sur la liaison série GPS
+  if (!gpsSerial.available()) {
+    displayError(2);  // Affiche une erreur de type 2 (accès aux données du GPS)
+  }
+
+  while (gpsSerial.available()) {
+    // Décodage des données GPS à l'aide de la bibliothèque TinyGPS
+    if (gps.encode(gpsSerial.read())) {
+      long latRaw, lonRaw;
+      gps.get_position(&latRaw, &lonRaw);
+
+      // Conversion des coordonnées brutes en valeurs latitudinales et longitudinales
+      int latInt = (int)(latRaw / 1000000);
+      int lonInt = (int)(lonRaw / 1000000);
+
+      int latDecimal = abs((int)latRaw) % 1000000;
+      int lonDecimal = abs((int)lonRaw) % 1000000;
+
+      // Création de chaînes de caractères pour la latitude et la longitude
+      latitudeStr = String((latRaw < 0 ? 'S' : 'N')) + String(latInt) + "." + String(latDecimal);
+      longitudeStr = String((lonRaw < 0 ? 'W' : 'E')) + String(lonInt) + "." + String(lonDecimal);
+    }
+  }
+}
+void displayError(int error) {
+  // Mesure le temps actuel en millisecondes depuis le démarrage du programme
+  unsigned long currentTime = millis();
+  // Définit un intervalle de temps d'une seconde (1000 millisecondes)
+  unsigned long interval = 1000;
+  // Stocke le temps de la dernière mise à jour de la couleur de la LED (initialisé à 0)
+  static unsigned long previousTime = 0;
+  // Deux variables booléennes statiques pour gérer l'alternance des couleurs
+  static bool displayColor1 = true;
+  static bool displayColor2 = true;
+
+  // Utilise une structure switch pour gérer les différentes erreurs
+  switch (error) {
+    case 1:  // Erreur d’accès à l’horloge RTC
+      // Vérifie si l'intervalle de temps s'est écoulé depuis la dernière mise à jour
+      if (currentTime - previousTime >= interval) {
+        previousTime = currentTime;
+        // Alterne la couleur de la LED entre rouge et bleu
+        if (displayColor1) {
+          leds.setColorRGB(0, LED_RED);
+        } else {
+          leds.setColorRGB(0, LED_BLUE);
+        }
+        displayColor1 = !displayColor1;  // Inverse la valeur de displayColor1
+      }
+      break;
+    case 2:  // Erreur d’accès aux données du GPS
+      // (suivi similaire pour les autres erreurs)
+      if (currentTime - previousTime >= interval) {
+        previousTime = currentTime;
+        // Alterne la couleur de la LED entre rouge et jaune
+        if (displayColor1) {
+          leds.setColorRGB(0, LED_RED);
+        } else {
+          leds.setColorRGB(0, LED_YELLOW);
+        }
+        displayColor1 = !displayColor1;  // Inverse la valeur de displayColor1
+      }
+      break;
+    case 3:  // Erreur accès aux données d’un capteur
+      // (suivi similaire pour les autres erreurs)
+      if (currentTime - previousTime >= interval) {
+        previousTime = currentTime;
+        // Alterne la couleur de la LED entre rouge et vert
+        if (displayColor1) {
+          leds.setColorRGB(0, LED_RED);
+        } else {
+          leds.setColorRGB(0, LED_GREEN);
+        }
+        displayColor1 = !displayColor1;  // Inverse la valeur de displayColor1
+      }
+      break;
+    case 4:  // Données reçues d’un capteur incohérentes - vérification matérielle requise
+      // (suivi similaire pour les autres erreurs)
+      if (currentTime - previousTime >= interval) {
+        previousTime = currentTime;
+        // Alterne la couleur de la LED entre rouge et vert, et modifie displayColor2
+        if (displayColor1 && displayColor2) {
+          leds.setColorRGB(0, LED_RED);
+        } else {
+          leds.setColorRGB(0, LED_GREEN);
+        }
+        displayColor1 = !displayColor1;  // Inverse la valeur de displayColor1
+        if (displayColor1) {
+          displayColor2 = !displayColor2;  // Inverse la valeur de displayColor2
+        }
+      }
+      break;
+    case 5:  // Carte SD pleine
+      // (suivi similaire pour les autres erreurs)
+      if (currentTime - previousTime >= interval) {
+        previousTime = currentTime;
+        // Alterne la couleur de la LED entre rouge et blanc
+        if (displayColor1) {
+          leds.setColorRGB(0, LED_RED);
+        } else {
+          leds.setColorRGB(0, LED_WHITE);
+        }
+        displayColor1 = !displayColor1;  // Inverse la valeur de displayColor1
+      }
+      break;
+    case 6:  // Erreur d’accès ou d’écriture sur la carte SD
+      // (suivi similaire pour les autres erreurs)
+      if (currentTime - previousTime >= interval) {
+        previousTime = currentTime;
+        // Alterne la couleur de la LED entre rouge et blanc, et modifie displayColor2
+        if (displayColor1 && displayColor2) {
+          leds.setColorRGB(0, LED_RED);
+        } else {
+          leds.setColorRGB(0, LED_WHITE);
+        }
+        displayColor1 = !displayColor1;  // Inverse la valeur de displayColor1
+        if (displayColor1) {
+          displayColor2 = !displayColor2;  // Inverse la valeur de displayColor2
+        }
+      }
+      break;
+    default:
+      break;  // Aucune action si l'erreur n'est pas gérée
+  }
+}
